@@ -26,19 +26,34 @@ defmodule Serpent do
     # Create a new Nx.Serving instance
     Nx.Serving.new(
       fn _opts ->
-        fn input ->
+        fn inputs ->
+          dbg(inputs)
+
           {result, _} =
-            Pythonx.eval("serving_fn(input)", %{
+            Pythonx.eval("serving_fn(inputs)", %{
               "serving_fn" => globals["serving_fn"],
-              "input" => extract_batch_data(input)
+              "inputs" => extract_batch_data(inputs)
             })
 
-          # Convert Python result back to Nx.Batch
+          # Convert Python result back to Nx.Tensor
           result |> Pythonx.decode() |> Nx.tensor()
         end
       end,
       serving_options
     )
+    |> Nx.Serving.client_preprocessing(fn input ->
+      # Validate and normalize input similar to Bumblebee's approach
+      {inputs, multi?} = validate_serving_input!(input, &validate_input/1)
+      batch = Nx.Batch.stack(inputs)
+      {batch, multi?}
+    end)
+    |> Nx.Serving.client_postprocessing(fn {result, _metadata}, multi? ->
+      # Normalize output to handle both single and batch results
+      case multi? do
+        true -> result
+        false -> List.first(Nx.to_list(result))
+      end
+    end)
   end
 
   # Private functions
@@ -116,5 +131,30 @@ defmodule Serpent do
     end
 
     :ok
+  end
+
+  # FIXME: Add input validation
+  defp validate_input(input) do
+    {:ok, input}
+  end
+
+  # Add validate_serving_input! function inspired by Bumblebee
+  def validate_serving_input!(input, validator) do
+    if is_list(input) do
+      inputs =
+        for item <- input do
+          case validator.(item) do
+            {:ok, normalized} -> normalized
+            {:error, message} -> raise ArgumentError, "invalid input in batch: #{message}"
+          end
+        end
+
+      {inputs, true}
+    else
+      case validator.(input) do
+        {:ok, normalized} -> {[normalized], false}
+        {:error, message} -> raise ArgumentError, "invalid input: #{message}"
+      end
+    end
   end
 end

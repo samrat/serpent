@@ -2,6 +2,48 @@
 
 **TODO: Add description**
 
+### Node 1
+iex --sname node2@localhost -S mix
+
+```elixir
+    cpu_intensive_code = """
+    def serving_fn(inputs):
+        # CPU-bound operation (calculating Fibonacci numbers)
+        def fibonacci(n):
+            if n <= 1:
+                return n
+            else:
+                return fibonacci(n-1) + fibonacci(n-2)
+
+        # Calculate Fibonacci number based on input
+        n = int(inputs[0])
+        result = fibonacci(min(n + 30, 35))  # Cap at 35 to avoid excessive computation
+
+        return [float(result)]
+    """
+
+    # Create the Serpent serving
+    serving = Serpent.new(cpu_intensive_code)
+
+    {:ok, _} = Nx.Serving.start_link([serving: serving, name: SerpentDistributedServing])
+```
+
+### Node 2
+
+iex --sname node2@localhost -S mix
+
+```elixir
+Node.connect(:"node1@localhost")
+
+# The request below will be served by `node1`
+iex(node2@localhost)4>             Nx.Serving.batched_run(
+...(node2@localhost)4>               {:distributed, SerpentDistributedServing}, 42)
+#Nx.Tensor<
+  f32[1]
+  [9227465.0]
+>
+```
+
 ## Installation
 
 If [available in Hex](https://hex.pm/docs/publish), the package can be installed
