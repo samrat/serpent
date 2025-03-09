@@ -27,16 +27,20 @@ defmodule Serpent do
     Nx.Serving.new(
       fn _opts ->
         fn inputs ->
-          dbg(inputs)
-
           {result, _} =
             Pythonx.eval("serving_fn(inputs)", %{
               "serving_fn" => globals["serving_fn"],
               "inputs" => extract_batch_data(inputs)
             })
 
-          # Convert Python result back to Nx.Tensor
-          result |> Pythonx.decode() |> Nx.tensor()
+          # Convert Python result back to Nx.Tensor and serialize it
+          [
+            result
+            |> Pythonx.decode()
+            |> :erlang.term_to_binary()
+            |> :binary.bin_to_list()
+          ]
+          |> Nx.tensor()
         end
       end,
       serving_options
@@ -44,15 +48,34 @@ defmodule Serpent do
     |> Nx.Serving.client_preprocessing(fn input ->
       # Validate and normalize input similar to Bumblebee's approach
       {inputs, multi?} = validate_serving_input!(input, &validate_input/1)
-      batch = Nx.Batch.stack(inputs)
+
+      # Convert inputs to binary before creating the batch
+      binary_inputs =
+        Enum.map(inputs, fn input ->
+          :erlang.term_to_binary(input) |> :binary.bin_to_list() |> Nx.tensor()
+        end)
+
+      batch = Nx.Batch.stack(binary_inputs)
       {batch, multi?}
     end)
     |> Nx.Serving.client_postprocessing(fn {result, _metadata}, multi? ->
-      # Normalize output to handle both single and batch results
-      case multi? do
-        true -> result
-        false -> List.first(Nx.to_list(result))
-      end
+      # Deserialize the result first
+      deserialized_result =
+        result
+        |> Nx.to_list()
+        |> :binary.list_to_bin()
+        |> :erlang.binary_to_term()
+
+      # FIXME: Normalize output to handle both single and batch results
+      # case multi? do
+      #   true ->
+      #     deserialized_result
+
+      #   false ->
+      #     List.first(
+      #       if is_list(deserialized_result), do: deserialized_result, else: [deserialized_result]
+      #     )
+      # end
     end)
   end
 
@@ -64,19 +87,33 @@ defmodule Serpent do
     # Extract the data from the batch by accessing its internal structure
     case batch.stack do
       [{[data_fn], _size}] when is_function(data_fn) ->
-        # Call the function to get the actual data
-        data_fn.() |> tensor_to_value()
+        # Call the function to get the actual data and convert tensor to binary then to term
+        data = data_fn.()
+
+        if match?(%Nx.Tensor{}, data) do
+          [
+            data
+            |> Nx.to_list()
+            |> :binary.list_to_bin()
+            |> :erlang.binary_to_term()
+          ]
+        else
+          data
+        end
 
       # Handle multiple items in the batch
       stack when is_list(stack) ->
-        # Process each item in the stack and flatten the result
+        # Process each item in the stack and convert from tensor to binary to term
         Enum.map(stack, fn {[data_fn], _size} when is_function(data_fn) ->
-          # Extract the value and flatten it if it's a list with a single element
-          value = data_fn.() |> tensor_to_value()
+          data = data_fn.()
 
-          case value do
-            [single_value] -> single_value
-            other -> other
+          if match?(%Nx.Tensor{}, data) do
+            data
+            |> Nx.to_list()
+            |> :binary.list_to_bin()
+            |> :erlang.binary_to_term()
+          else
+            data
           end
         end)
 
@@ -87,20 +124,7 @@ defmodule Serpent do
 
   def extract_batch_data(input), do: input
 
-  defp tensor_to_value(%Nx.Tensor{} = tensor) do
-    # For scalar tensors
-    if Nx.rank(tensor) == 0 do
-      Nx.to_number(tensor)
-    else
-      # For non-scalar tensors, convert to lists
-      tensor |> Nx.to_list()
-    end
-  end
-
-  defp tensor_to_value(value), do: value
-
   defp validate_serving_fn!(globals) do
-    dbg(globals)
     # Check if serving_fn exists in globals
     unless Map.has_key?(globals, "serving_fn") do
       raise ArgumentError, "Python code must define a serving_fn function"

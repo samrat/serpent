@@ -19,7 +19,7 @@ iex --sname node2@localhost -S mix
         n = int(inputs[0])
         result = fibonacci(min(n + 30, 35))  # Cap at 35 to avoid excessive computation
 
-        return [float(result)]
+        return float(result)
     """
 
     # Create the Serpent serving
@@ -55,6 +55,22 @@ def deps do
     {:serpent, "~> 0.1.0"}
   ]
 end
+```
+
+
+```
+text_processing_code = """
+def serving_fn(inputs):
+  # Simple text processing function that counts words and returns statistics
+  text = inputs[0]
+  # Count words
+  word_count = len(text.split())
+  # Count characters (excluding spaces)
+  char_count = len(text.replace(" ", ""))
+  # Calculate average word length
+  avg_word_length = char_count / word_count if word_count > 0 else 0
+  return word_count
+"""
 ```
 
 Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc)
