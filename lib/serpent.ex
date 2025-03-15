@@ -33,14 +33,7 @@ defmodule Serpent do
               "inputs" => extract_batch_data(inputs)
             })
 
-          # Convert Python result back to Nx.Tensor and serialize it
-          [
-            result
-            |> Pythonx.decode()
-            |> :erlang.term_to_binary()
-            |> :binary.bin_to_list()
-          ]
-          |> Nx.tensor(type: :u8)
+          result
         end
       end,
       serving_options
@@ -57,25 +50,6 @@ defmodule Serpent do
 
       batch = Nx.Batch.stack(binary_inputs)
       {batch, multi?}
-    end)
-    |> Nx.Serving.client_postprocessing(fn {result, _metadata}, multi? ->
-      # Deserialize the result first
-      deserialized_result =
-        result
-        |> Nx.to_list()
-        |> :binary.list_to_bin()
-        |> :erlang.binary_to_term()
-
-      # FIXME: Normalize output to handle both single and batch results
-      # case multi? do
-      #   true ->
-      #     deserialized_result
-
-      #   false ->
-      #     List.first(
-      #       if is_list(deserialized_result), do: deserialized_result, else: [deserialized_result]
-      #     )
-      # end
     end)
   end
 
