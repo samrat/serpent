@@ -24,7 +24,7 @@ defmodule Serpent do
     validate_serving_fn!(globals)
 
     # Create a new Nx.Serving instance
-    Nx.Serving.new(
+    Serpent.Serving.new(
       fn _opts ->
         fn inputs ->
           {result, _} =
@@ -40,7 +40,7 @@ defmodule Serpent do
             |> :erlang.term_to_binary()
             |> :binary.bin_to_list()
           ]
-          |> Nx.tensor()
+          |> Nx.tensor(type: :u8)
         end
       end,
       serving_options
@@ -116,6 +116,7 @@ defmodule Serpent do
             data
           end
         end)
+        |> dbg()
 
       _ ->
         raise "Unknown batch data structure: #{inspect(batch.stack)}"
@@ -162,7 +163,6 @@ defmodule Serpent do
     {:ok, input}
   end
 
-  # Add validate_serving_input! function inspired by Bumblebee
   def validate_serving_input!(input, validator) do
     if is_list(input) do
       inputs =
