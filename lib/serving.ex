@@ -702,16 +702,10 @@ defmodule Serpent.Serving do
           end)
           |> elem(0)
           |> case do
-            [{{output, metadata}, size}] ->
-              # {remove_maybe_padded(output, 0, size), metadata}
+            [{{output, metadata}, _size}] ->
               {output, metadata}
 
-            [{{output, metadata}, _size} | _] = all ->
-              # output =
-              # all
-              # |> Enum.map(fn {{output, _}, size} -> composite_to_tensors(output, 0, size) end)
-              # |> tensors_to_composite(output)
-
+            [{{output, metadata}, _size} | _] ->
               {output, metadata}
           end
       end
@@ -818,26 +812,6 @@ defmodule Serpent.Serving do
 
   defp remove_maybe_padded(output, start, size) do
     Nx.Defn.Composite.traverse(output, &Nx.slice_along_axis(&1, start, size, axis: @axis))
-  end
-
-  defp composite_to_tensors(output, start, size) do
-    output
-    |> Nx.Defn.Composite.reduce(
-      [],
-      &[Nx.slice_along_axis(&1, start, size, axis: @axis) | &2]
-    )
-    |> Enum.reverse()
-  end
-
-  defp tensors_to_composite(tensors, template) do
-    concat = Enum.zip_with(tensors, &Nx.concatenate(&1, axis: @axis))
-
-    {output, []} =
-      Nx.Defn.Composite.traverse(template, concat, fn _template, [tensor | tensors] ->
-        {tensor, tensors}
-      end)
-
-    output
   end
 
   ## Process API
@@ -1247,23 +1221,20 @@ defmodule Serpent.Serving do
   end
 
   defp receive_execute(ref, size, index, acc, template_metadata) do
-    IO.inspect("receive_execute")
-
     case receive_each(ref, size, index) do
       :done ->
-        {template, metadata} =
+        {_template, metadata} =
           template_metadata || raise "unexpected error: streaming finished before it started"
 
         {:ok, Enum.reverse(acc), metadata}
 
-      {:batch, {output_start, output_size, output, metadata}} ->
+      {:batch, {_output_start, output_size, output, metadata}} ->
         # If we have a single response, slice and return immediately.
         # Otherwise we collect their contents and build the concatenated result later.
 
         if acc == [] and output_size + index == size do
           {:ok, output, metadata}
         else
-          # funs = composite_to_tensors(output, output_start, output_size)
           receive_execute(ref, size, index + output_size, [output | acc], {output, metadata})
         end
 
