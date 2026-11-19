@@ -24,20 +24,20 @@ Nx.Serving.run(serving, "Paris is the [MASK] of France.")
 #=> [%{"token_str" => "capital", "score" => 0.99...}, ...]
 ```
 
-For anything else, say where the example input is, either the variable holding it or
-the example value as written in the snippet. The result is whatever the snippet's last
+For anything else, say where the input goes: pass the snippet as a function and
+interpolate the input where the example value was, or, if the snippet keeps the example
+in a variable, name it with `input:`. The result is whatever the snippet's last
 line shows, unless you pass `:output`.
 
 ```elixir
 serving =
   Serpent.from_snippet(
-    ~S"""
+    fn input -> """
     from inworld import voice_isolation
     offline = voice_isolation.VoiceIsolator("inworld/voice-isolator")
-    wav, sample_rate = voice_isolation.load_audio("sample_14.wav")
+    wav, sample_rate = voice_isolation.load_audio(#{input})
     voice = offline.isolate(wav, sample_rate)
-    """,
-    input: ~s("sample_14.wav"),
+    """ end,
     output: "(voice.tolist(), sample_rate)",
     dependencies: ["inworld-voice-isolation"]
   )

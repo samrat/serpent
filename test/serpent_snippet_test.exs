@@ -83,18 +83,22 @@ defmodule SerpentSnippetTest do
       assert Nx.Serving.run(serving, "a b c d") == 4
     end
 
-    test "literal example value as input; result is the trailing expression" do
+    test "function snippet: the input is interpolated; result is the trailing expression" do
       serving =
-        Serpent.from_snippet(
+        Serpent.from_snippet(fn input ->
           """
           labels = {0: "NEGATIVE", 1: "POSITIVE"}
-          score = len("Hello, my dog is cute") % 2
+          score = len(#{input}) % 2
           labels[score]
-          """,
-          input: ~s("Hello, my dog is cute")
-        )
+          """
+        end)
 
       assert Nx.Serving.run(serving, ["ab", "abc"]) == ["NEGATIVE", "POSITIVE"]
+    end
+
+    test "input can be a name the snippet reads but never assigns" do
+      serving = Serpent.from_snippet("path.upper()", input: "path")
+      assert Nx.Serving.run(serving, "noisy.wav") == "NOISY.WAV"
     end
 
     test "result taken from the final print" do
@@ -132,12 +136,20 @@ defmodule SerpentSnippetTest do
     end
 
     test "errors" do
-      assert_raise ArgumentError, ~r/never assigns `missing`/, fn ->
+      assert_raise ArgumentError, ~r/never uses `missing`/, fn ->
         Nx.Serving.run(Serpent.from_snippet(@model_snippet, input: "missing"), "a")
       end
 
-      assert_raise ArgumentError, ~r/does not appear/, fn ->
+      assert_raise ArgumentError, ~r/never uses `serpent_input`/, fn ->
+        Nx.Serving.run(Serpent.from_snippet(fn _input -> @model_snippet end), "a")
+      end
+
+      assert_raise ArgumentError, ~r/not a variable name/, fn ->
         Nx.Serving.run(Serpent.from_snippet(@model_snippet, input: ~s("nope")), "a")
+      end
+
+      assert_raise ArgumentError, ~r/can't be given with a function snippet/, fn ->
+        Serpent.Snippet.to_code(fn _ -> @model_snippet end, input: "text")
       end
 
       assert_raise ArgumentError, ~r/does not depend on the input/, fn ->

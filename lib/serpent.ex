@@ -85,20 +85,24 @@ defmodule Serpent do
       ''')
 
   See `Serpent.Snippet` for how the snippet is converted and what `:input`,
-  `:output` and `:batched` mean. Takes the same options as `new/2` plus
+  `:output` and `:batched` mean, and for snippets passed as
+  `fn input -> ... end`. Takes the same options as `new/2` plus
   those. `:dependencies` defaults to packages guessed from the imports; pass
   it when an import's name differs from its pip package.
   """
-  def from_snippet(snippet, opts \\ []) when is_binary(snippet) do
+  def from_snippet(snippet, opts \\ [])
+      when is_binary(snippet) or is_function(snippet, 1) do
     {snippet_opts, opts} = Keyword.split(opts, [:input, :output, :batched])
+    marked? = is_function(snippet) or Keyword.has_key?(snippet_opts, :input)
 
-    if snippet_opts[:input] == nil and (snippet_opts[:output] || snippet_opts[:batched]) do
-      raise ArgumentError, "`:output` and `:batched` need `:input`"
+    if not marked? and (snippet_opts[:output] || snippet_opts[:batched]) do
+      raise ArgumentError, "`:output` and `:batched` need `:input` or a function snippet"
     end
 
     opts =
       Keyword.put_new_lazy(opts, :dependencies, fn ->
-        Serpent.Snippet.infer_dependencies(snippet)
+        source = if is_function(snippet), do: snippet.("input"), else: snippet
+        Serpent.Snippet.infer_dependencies(source)
       end)
 
     build({:snippet, snippet, snippet_opts}, opts)

@@ -7,8 +7,9 @@
 #   including that line becomes setup; serving_fn calls `x` on the whole
 #   batch, reusing literal keyword arguments from the snippet's example call.
 #
-# * marked: the caller says where the example input is: a variable name, or
-#   the literal example value as written in the snippet. Statements that
+# * marked: the caller names the variable holding the input. If the snippet
+#   assigns it an example value, that assignment is dropped; otherwise it is
+#   a free name (e.g. interpolated into the snippet). Statements that
 #   (transitively) depend on it run per input; everything else is setup that
 #   runs once. The result is `output`, or by default whatever the last line
 #   shows (a bare expression, a print, or an assignment).
@@ -17,15 +18,13 @@ import ast
 import textwrap
 
 _PRINT_FUNCS = {"print", "display", "pprint"}
-_INPUT = "_serpent_input"
 
-
-def serpent_snippet_to_code(source, input_spec=None, output_expr=None, batched=False):
+def serpent_snippet_to_code(source, input_name=None, output_expr=None, batched=False):
     tree = ast.parse(textwrap.dedent(_strip_doctest(source)))
 
-    if input_spec is None:
+    if input_name is None:
         return _pipeline_mode(tree.body)
-    return _marked_mode(tree.body, input_spec, output_expr, batched)
+    return _marked_mode(tree.body, input_name, output_expr, batched)
 
 
 def _strip_doctest(source):
@@ -100,32 +99,27 @@ def _pipeline_mode(body):
     )
 
 
-def _marked_mode(body, input_spec, output_expr, batched):
-    input_spec = input_spec.strip()
+def _marked_mode(body, name, output_expr, batched):
+    name = name.strip()
+    if not name.isidentifier():
+        raise ValueError(f"`input` ({name}) is not a variable name")
 
-    if input_spec.isidentifier():
-        name = input_spec
-        index = next(
-            (
-                i
-                for i, s in enumerate(body)
-                if isinstance(s, (ast.Assign, ast.AnnAssign)) and name in _names_written(s)
-            ),
-            None,
-        )
-        if index is None:
-            raise ValueError(
-                f"the snippet never assigns `{name}`. `input` must be a variable the snippet "
-                "sets to an example input, or the example value itself as written in the snippet"
-            )
+    index = next(
+        (
+            i
+            for i, s in enumerate(body)
+            if isinstance(s, (ast.Assign, ast.AnnAssign)) and name in _names_written(s)
+        ),
+        None,
+    )
+    if index is not None:
         # The example assignment goes away: the variable is now a parameter.
         body = body[:index] + body[index + 1 :]
-    else:
-        name = _INPUT
-        replacer = _Replace(ast.dump(ast.parse(input_spec, mode="eval").body), name)
-        body = [replacer.visit(s) for s in body]
-        if not replacer.found:
-            raise ValueError(f"`input` ({input_spec}) does not appear in the snippet")
+    elif not any(name in _names_read(s) for s in body):
+        raise ValueError(
+            f"the snippet never uses `{name}`. `input` must be a variable the snippet "
+            "sets to an example input, or a name it reads without assigning"
+        )
 
     if output_expr is not None:
         output = ast.parse(output_expr.strip(), mode="eval").body
@@ -186,19 +180,6 @@ def _default_output(body):
         "could not tell what the snippet's result is from its last line. Pass `output`, "
         "e.g. the expression it prints"
     )
-
-
-class _Replace(ast.NodeTransformer):
-    def __init__(self, target_dump, name):
-        self.target_dump = target_dump
-        self.name = name
-        self.found = False
-
-    def generic_visit(self, node):
-        if isinstance(node, ast.expr) and ast.dump(node) == self.target_dump:
-            self.found = True
-            return ast.copy_location(ast.Name(self.name, ast.Load()), node)
-        return super().generic_visit(node)
 
 
 def _unparse(stmts):

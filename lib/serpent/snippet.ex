@@ -7,17 +7,25 @@ defmodule Serpent.Snippet do
   batch, reusing literal keyword arguments from the snippet's example call
   (e.g. `max_new_tokens=256`).
 
-  For any other snippet, pass `:input`: either the variable that holds the
-  example input, or the example value exactly as written in the snippet.
+  For any other snippet, say where the input goes. If the snippet keeps the
+  example input in a variable, pass its name as `:input`:
 
       text = "Replace me by any text you'd like."     # input: "text"
       encoded = tokenizer(text, return_tensors="pt")
       output = model(**encoded)                       # result: `output`
 
-      inputs = tokenizer("Hello, my dog is cute", return_tensors="pt")
-      #                  ^ input: ~s("Hello, my dog is cute")
+  If the example value is written inline, pass the snippet as a function
+  and interpolate the input where the value was:
+
+      fn input -> \"""
+      inputs = tokenizer(\#{input}, return_tensors="pt")
       logits = model(**inputs).logits
       model.config.id2label[logits.argmax().item()]   # result: this expression
+      \""" end
+
+  The function is called with a variable name, so `\#{input}` becomes a
+  Python name, not a value. Since the snippet is then an interpolating
+  string, Elixir also processes its escapes (`\\n` and so on).
 
   Statements that depend on the input run once per input; everything else
   (imports, loading the model) runs once when the serving starts. The
@@ -35,12 +43,26 @@ defmodule Serpent.Snippet do
   @external_resource "priv/snippet.py"
   @converter File.read!("priv/snippet.py")
 
+  @input_placeholder "serpent_input"
+
   @doc """
   Returns the generated serving code. Python must be initialized.
 
-  Use it to check what a snippet turns into before serving it.
+  Use it to check what a snippet turns into before serving it. `source` is
+  a string or a function snippet (see the module docs).
   """
-  def to_code(source, opts \\ []) do
+  def to_code(source, opts \\ [])
+
+  def to_code(source, opts) when is_function(source, 1) do
+    if Keyword.has_key?(opts, :input) do
+      raise ArgumentError,
+            "`:input` can't be given with a function snippet; interpolate the input instead"
+    end
+
+    to_code(source.(@input_placeholder), Keyword.put(opts, :input, @input_placeholder))
+  end
+
+  def to_code(source, opts) when is_binary(source) do
     opts = Keyword.validate!(opts, [:input, :output, batched: false])
 
     {code, _} =

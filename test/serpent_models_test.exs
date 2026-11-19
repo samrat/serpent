@@ -18,9 +18,9 @@ defmodule SerpentModelsTest do
              Nx.Serving.run(serving, "Paris is the [MASK] of France.")
   end
 
-  test "example value as input, last line as result" do
+  test "function snippet, last line as result" do
     serving =
-      Serpent.from_snippet(
+      Serpent.from_snippet(fn input ->
         """
         import torch
         from transformers import DistilBertTokenizer, DistilBertForSequenceClassification
@@ -28,15 +28,14 @@ defmodule SerpentModelsTest do
         tokenizer = DistilBertTokenizer.from_pretrained("distilbert-base-uncased-finetuned-sst-2-english")
         model = DistilBertForSequenceClassification.from_pretrained("distilbert-base-uncased-finetuned-sst-2-english")
 
-        inputs = tokenizer("Hello, my dog is cute", return_tensors="pt")
+        inputs = tokenizer(#{input}, return_tensors="pt")
         with torch.no_grad():
             logits = model(**inputs).logits
 
         predicted_class_id = logits.argmax().item()
         model.config.id2label[predicted_class_id]
-        """,
-        input: ~s("Hello, my dog is cute")
-      )
+        """
+      end)
 
     assert Nx.Serving.run(serving, ["What a great day", "This is terrible and broken"]) ==
              ["POSITIVE", "NEGATIVE"]
