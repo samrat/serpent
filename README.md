@@ -95,6 +95,25 @@ and loads its own copy of the model. A BEAM node can only run one Python interpr
 so the first serving started on a node decides which packages get installed. If you run
 several servings on one node, call `Serpent.Python.init(all_packages)` first.
 
+## Caveats
+
+Python's global interpreter lock (GIL) applies. Pythonx embeds one interpreter per
+BEAM node, and only one thread runs Python code at a time, so every serving, partition
+and `Serpent.Stream` session on a node takes turns on a single core's worth of Python.
+
+- Native code is mostly unaffected. PyTorch and numpy release the GIL inside their
+  C/CUDA code, so a large forward pass doesn't block other Python work.
+- Python-level code is the bottleneck: tokenization, pre/post-processing,
+  token-by-token generation loops. With small, fast models or many concurrent
+  sessions, the GPU can sit idle waiting for Python.
+- Converting inputs and outputs also holds the GIL. Results are turned into plain
+  lists and numbers (`.tolist()`), which is slow for large arrays; return bytes
+  (e.g. `arr.tobytes()`) for large audio or tensors.
+
+To scale, batch more per call (`:batch_size`, `:batch_timeout`) and add nodes rather
+than processes: each node has its own interpreter and its own GIL, and
+`{:distributed, name}` spreads requests across them.
+
 ## Tests
 
 ```
