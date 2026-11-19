@@ -1,6 +1,6 @@
 # Serpent
 
-Build an `Nx.Serving` from a Hugging Face model's usage snippet, or from any Python code.
+Build an `Nx.Serving` from a Hugging Face model(or any Python code).
 
 Serpent embeds Python with [Pythonx](https://hex.pm/packages/pythonx) and returns
 a plain `%Nx.Serving{}`, so you get everything Nx.Serving offers: inline runs, request
@@ -104,7 +104,7 @@ mix test --include hugging_face   # also runs model snippets; downloads torch an
 
 ## License
 
-Copyright (c) 2025 Samrat Man Singh
+Copyright (c) 2026 [Samrat Man Singh](https://samrat.me)
 
 Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
 
