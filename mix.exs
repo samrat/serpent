@@ -14,15 +14,17 @@ defmodule Serpent.MixProject do
   # Run "mix help compile.app" to learn about applications.
   def application do
     [
-      extra_applications: [:logger]
+      extra_applications: [:logger],
+      mod: {Serpent.Application, []}
     ]
   end
 
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:nx, "~> 0.9.2"},
-      {:pythonx, "~> 0.4.4"}
+      {:nx, "~> 1.0"},
+      {:pythonx, "~> 0.4.11"},
+      {:local_cluster, "~> 2.1", only: :test}
     ]
   end
 end

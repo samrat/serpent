@@ -1,158 +1,168 @@
 defmodule Serpent do
-  def new(python_code, opts \\ []) do
-    serving_options = Keyword.get(opts, :serving_options, [])
+  @moduledoc """
+  Build `Nx.Serving`s backed by Python code, including any Hugging Face model.
 
-    # FIXME: let caller provide uv_init. Or maybe even let caller call uv_init directly?
-    try do
-      Pythonx.uv_init("""
-      [project]
-      name = "project"
-      version = "0.0.0"
-      requires-python = "==3.11.*"
-      dependencies = [
-      ]
-      """)
-    rescue
-      # Ignore the error if Python interpreter is already initialized
-      RuntimeError -> :ok
-    end
+  The servings returned here are plain `%Nx.Serving{}` structs, so everything
+  Nx.Serving offers works: `Nx.Serving.run/2` inline, `Nx.Serving.start_link/1`
+  in a supervision tree, request batching, and `{:distributed, name}` lookups
+  across a cluster. Inputs and outputs can be any Elixir term, not just tensors.
 
-    # Evaluate the Python code and get the globals
-    {_, globals} = Pythonx.eval(python_code, %{})
+      serving = Serpent.hugging_face("distilbert/distilbert-base-uncased-finetuned-sst-2-english")
 
-    # Validate that serving_fn exists and has the correct signature
-    validate_serving_fn!(globals)
+      Nx.Serving.run(serving, "I love this!")
+      #=> [%{"label" => "POSITIVE", "score" => 0.9998}]
 
-    # Create a new Nx.Serving instance
-    Serpent.Serving.new(
-      fn _opts ->
-        fn inputs ->
-          {result, _} =
-            Pythonx.eval("serving_fn(inputs)", %{
-              "serving_fn" => globals["serving_fn"],
-              "inputs" => extract_batch_data(inputs)
-            })
+      # In your supervision tree:
+      {Nx.Serving, serving: serving, name: MyClassifier, batch_size: 16}
 
-          result
-        end
-      end,
-      serving_options
-    )
-    |> Nx.Serving.client_preprocessing(fn input ->
-      # Validate and normalize input similar to Bumblebee's approach
-      {inputs, multi?} = validate_serving_input!(input, &validate_input/1)
+      Nx.Serving.batched_run(MyClassifier, ["great", "awful"])
 
-      # Convert inputs to binary before creating the batch
-      binary_inputs =
-        Enum.map(inputs, fn input ->
-          :erlang.term_to_binary(input) |> :binary.bin_to_list() |> Nx.tensor()
-        end)
+  Python is started inside the serving (see `Serpent.Python`), so each node
+  that runs a serving sets up its own interpreter and loads its own copy of
+  the model.
+  """
 
-      batch = Nx.Batch.stack(binary_inputs)
-      {batch, multi?}
-    end)
+  @doc """
+  Builds a serving from Python source that defines `serving_fn(inputs)`.
+
+  `serving_fn` gets a list of inputs (one per request in the batch, converted
+  from Elixir: strings become `str`, maps become `dict`, and so on) and must
+  return a list with one result per input. Results are converted back to
+  Elixir terms. Module-level code runs once when the serving starts, so that
+  is the place to load models.
+
+  Passing a single input to `Nx.Serving.run/2` returns a single result;
+  passing a list returns a list.
+
+  ## Options
+
+    * `:dependencies` - pip packages to install, e.g. `["numpy"]`
+    * `:python` - the `requires-python` constraint (see `Serpent.Python.init/2`)
+    * `:batch_size` - maximum number of inputs per call to `serving_fn` when
+      started as a process. Defaults to `8`; can be overridden on `start_link`
+    * `:batch_timeout` - ms to wait for a batch to fill up when started as a
+      process. Defaults to Nx.Serving's `100`
+  """
+  def new(python_code, opts \\ []) when is_binary(python_code) do
+    build({:code, python_code}, opts)
   end
 
-  # Private functions
+  defp build(source, opts) do
+    opts =
+      Keyword.validate!(opts, [:python, :batch_timeout, dependencies: [], batch_size: 8])
 
-  # FIXME: Nx.Serving.run passes the input as a Nx.Batch but we need to pass a list to the Python code.
-  # Is there a better way to do this?
-  def extract_batch_data(%Nx.Batch{} = batch) do
-    # Extract the data from the batch by accessing its internal structure
-    case batch.stack do
-      [{[data_fn], _size}] when is_function(data_fn) ->
-        # Call the function to get the actual data and convert tensor to binary then to term
-        data = data_fn.()
+    arg = %{
+      source: source,
+      dependencies: opts[:dependencies],
+      python_opts: Keyword.take(opts, [:python])
+    }
 
-        if match?(%Nx.Tensor{}, data) do
-          [
-            data
-            |> Nx.to_list()
-            |> :binary.list_to_bin()
-            |> :erlang.binary_to_term()
-          ]
-        else
-          data
-        end
+    # Defaults for Nx.Serving.start_link/1; options given there take precedence.
+    process_options =
+      [batch_keys: Serpent.Codec.batch_keys(), batch_size: opts[:batch_size]] ++
+        Keyword.take(opts, [:batch_timeout])
 
-      # Handle multiple items in the batch
-      stack when is_list(stack) ->
-        # Process each item in the stack and convert from tensor to binary to term
-        Enum.map(stack, fn {[data_fn], _size} when is_function(data_fn) ->
-          data = data_fn.()
-
-          if match?(%Nx.Tensor{}, data) do
-            data
-            |> Nx.to_list()
-            |> :binary.list_to_bin()
-            |> :erlang.binary_to_term()
-          else
-            data
-          end
-        end)
-        |> dbg()
-
-      _ ->
-        raise "Unknown batch data structure: #{inspect(batch.stack)}"
-    end
+    Nx.Serving.new(Serpent.Serving, arg)
+    |> Nx.Serving.process_options(process_options)
+    |> Nx.Serving.client_preprocessing(&preprocess/1)
+    |> Nx.Serving.client_postprocessing(&postprocess/2)
   end
 
-  def extract_batch_data(input), do: input
+  @doc """
+  Builds a serving from a Hugging Face model's card.
 
-  defp validate_serving_fn!(globals) do
-    # Check if serving_fn exists in globals
-    unless Map.has_key?(globals, "serving_fn") do
-      raise ArgumentError, "Python code must define a serving_fn function"
-    end
+  Serpent downloads the model card, takes its Python usage snippet and turns
+  it into a serving (see `Serpent.Snippet` for how). Cards that show a
+  `transformers` pipeline need nothing else:
 
-    # Get the function object
-    {serving_fn, _} = Pythonx.eval("serving_fn", globals)
+      serving = Serpent.hugging_face("distilbert/distilbert-base-uncased-finetuned-sst-2-english")
+      Nx.Serving.run(serving, "I love this!")
+      #=> [%{"label" => "POSITIVE", "score" => 0.9998...}]
 
-    # Check if it's callable
-    {is_callable, _} = Pythonx.eval("callable(serving_fn)", %{"serving_fn" => serving_fn})
+  For other snippets, say where the example input is, either the variable
+  holding it or the example value as written on the card. The result
+  defaults to whatever the snippet's last line shows:
 
-    unless is_callable do
-      raise ArgumentError, "serving_fn must be a callable function"
-    end
+      Serpent.hugging_face("openai-community/gpt2", input: "text")
 
-    # Check the number of arguments
-    {arg_count, _} =
-      Pythonx.eval(
-        """
-        import inspect
-        len(inspect.signature(serving_fn).parameters)
-        """,
-        %{"serving_fn" => serving_fn}
+      Serpent.hugging_face("distilbert/distilbert-base-uncased-finetuned-sst-2-english",
+        input: ~s("Hello, my dog is cute")
       )
 
-    if arg_count < 1 do
-      raise ArgumentError, "serving_fn must accept at least one argument (the input)"
-    end
+  To edit the snippet first (e.g. to drop `device="cuda"`), copy it from the
+  card and use `from_snippet/2`.
 
-    :ok
+  ## Options
+
+    * `:input`, `:output`, `:batched` - see `Serpent.Snippet`. Without
+      `:input` the snippet must create a `pipeline(...)`
+    * `:block` - which Python block of the card to use (0-based). Defaults
+      to the first one that fits
+    * `:revision` - model card revision. Defaults to `"main"`
+    * `:dependencies` - pip packages. Defaults to the card's `pip install`
+      lines plus packages guessed from the snippet's imports
+    * plus `:python`, `:batch_size` and `:batch_timeout` as in `new/2`
+  """
+  def hugging_face(model, opts \\ []) when is_binary(model) do
+    {card_opts, opts} = Keyword.split(opts, [:block, :revision])
+    card = Serpent.HuggingFace.model_card(model, card_opts)
+
+    snippet =
+      card
+      |> Serpent.HuggingFace.python_blocks()
+      |> Serpent.HuggingFace.pick_block(Keyword.merge(card_opts, Keyword.take(opts, [:input])))
+
+    opts =
+      Keyword.put_new_lazy(opts, :dependencies, fn ->
+        merge_dependencies(Serpent.HuggingFace.pip_packages(card), snippet)
+      end)
+
+    from_snippet(snippet, opts)
   end
 
-  # FIXME: Add input validation
-  defp validate_input(input) do
-    {:ok, input}
+  @doc """
+  Builds a serving from a pasted Python usage snippet, e.g. one copied from a
+  model card.
+
+      Serpent.from_snippet(~S'''
+      from transformers import pipeline
+      pipe = pipeline("text-classification", model="distilbert/distilbert-base-uncased-finetuned-sst-2-english")
+      print(pipe("I love this!"))
+      ''')
+
+  See `Serpent.Snippet` for how the snippet is converted and what `:input`,
+  `:output` and `:batched` mean. Takes the same options as `new/2` plus
+  those. `:dependencies` defaults to packages guessed from the imports.
+  """
+  def from_snippet(snippet, opts \\ []) when is_binary(snippet) do
+    {snippet_opts, opts} = Keyword.split(opts, [:input, :output, :batched])
+
+    if snippet_opts[:input] == nil and (snippet_opts[:output] || snippet_opts[:batched]) do
+      raise ArgumentError, "`:output` and `:batched` need `:input`"
+    end
+
+    opts = Keyword.put_new_lazy(opts, :dependencies, fn -> merge_dependencies([], snippet) end)
+    build({:snippet, snippet, snippet_opts}, opts)
   end
 
-  def validate_serving_input!(input, validator) do
-    if is_list(input) do
-      inputs =
-        for item <- input do
-          case validator.(item) do
-            {:ok, normalized} -> normalized
-            {:error, message} -> raise ArgumentError, "invalid input in batch: #{message}"
-          end
-        end
+  # Packages named by the card win over guesses for the same package.
+  defp merge_dependencies(pip_packages, snippet) do
+    (pip_packages ++ Serpent.Snippet.infer_dependencies(snippet))
+    |> Enum.uniq_by(&(&1 |> String.split(~r/[<>=!~\[; ]/, parts: 2) |> hd() |> String.downcase()))
+  end
 
-      {inputs, true}
-    else
-      case validator.(input) do
-        {:ok, normalized} -> {[normalized], false}
-        {:error, message} -> raise ArgumentError, "invalid input: #{message}"
-      end
+  defp preprocess(input) do
+    {inputs, multi?} = if is_list(input), do: {input, true}, else: {[input], false}
+
+    if inputs == [] do
+      raise ArgumentError, "expected at least one input, got an empty list"
     end
+
+    {Serpent.Codec.encode_inputs(inputs), multi?}
+  end
+
+  defp postprocess({output, _metadata}, multi?) do
+    results = Serpent.Codec.decode_outputs(output)
+    if multi?, do: results, else: hd(results)
   end
 end

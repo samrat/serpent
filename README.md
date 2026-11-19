@@ -1,81 +1,108 @@
 # Serpent
 
-**TODO: Add description**
+Build an `Nx.Serving` from any Hugging Face model, or from any Python code.
 
-### Node 1
-iex --sname node2@localhost -S mix
+Serpent embeds Python with [Pythonx](https://hex.pm/packages/pythonx) and returns
+a plain `%Nx.Serving{}`, so you get everything Nx.Serving offers: inline runs, request
+batching, supervision, and `{:distributed, name}` lookups across a cluster. Inputs and
+outputs can be any Elixir term, not just tensors.
+
+## Hugging Face models
+
+Give Serpent a model name. It downloads the model card, takes the Python usage snippet
+and turns it into a serving.
 
 ```elixir
-    cpu_intensive_code = """
-    def serving_fn(inputs):
-        # CPU-bound operation (calculating Fibonacci numbers)
-        def fibonacci(n):
-            if n <= 1:
-                return n
-            else:
-                return fibonacci(n-1) + fibonacci(n-2)
+# The card shows `unmasker = pipeline('fill-mask', ...)`: nothing else needed.
+serving = Serpent.hugging_face("distilbert/distilbert-base-uncased")
+Nx.Serving.run(serving, "Paris is the [MASK] of France.")
+#=> [%{"token_str" => "capital", "score" => 0.99...}, ...]
+```
 
-        # Calculate Fibonacci number based on input
-        n = int(inputs[0])
-        result = fibonacci(min(n + 30, 35))  # Cap at 35 to avoid excessive computation
+Cards that create a `transformers` pipeline work as is. For anything else, say where the
+example input is, either the variable holding it or the example value as written on
+the card. The result is whatever the snippet's last line shows, unless you pass `:output`.
 
-        return float(result)
+```elixir
+# Card: inputs = tokenizer("Hello, my dog is cute", return_tensors="pt") ...
+#       model.config.id2label[predicted_class_id]
+serving =
+  Serpent.hugging_face("distilbert/distilbert-base-uncased-finetuned-sst-2-english",
+    input: ~s("Hello, my dog is cute")
+  )
+
+Nx.Serving.run(serving, ["What a great day", "This is terrible"])
+#=> ["POSITIVE", "NEGATIVE"]
+
+# Card: sentences = [...]; embeddings = model.encode(sentences)
+Serpent.hugging_face("sentence-transformers/all-MiniLM-L6-v2", input: "sentences", batched: true)
+```
+
+Statements that use the input run per request. Everything else (imports, loading the
+model) runs once when the serving starts. Pip packages come from the card's
+`pip install` lines plus the snippet's imports. Other options: `:output`, `:block` (which
+code block to use), `:dependencies`, `:batch_size`.
+
+### Pasting a snippet
+
+If the card's snippet needs edits (e.g. it uses `device="cuda"`), paste your version:
+
+```elixir
+Serpent.from_snippet(~S"""
+from transformers import pipeline
+pipe = pipeline("text-classification", model="cardiffnlp/twitter-roberta-base-sentiment-latest")
+pipe("Covid cases are increasing fast!")
+""")
+```
+
+`Serpent.Snippet.to_code/2` shows the generated code (Python must be running).
+
+## Any Python code
+
+Define `serving_fn(inputs)`. It gets a list of inputs and returns one result per input.
+Top-level code runs once when the serving starts, so load models there.
+
+```elixir
+serving =
+  Serpent.new(
     """
+    import numpy as np
+    def serving_fn(inputs):
+        return [float(np.mean(x)) for x in inputs]
+    """,
+    dependencies: ["numpy"]
+  )
 
-    # Create the Serpent serving
-    serving = Serpent.new(cpu_intensive_code)
-
-    {:ok, _} = Nx.Serving.start_link([serving: serving, name: SerpentDistributedServing])
+Nx.Serving.run(serving, [[1, 2, 3], [10, 20]])
+#=> [2.0, 15.0]
 ```
 
-### Node 2
-
-iex --sname node2@localhost -S mix
+## Running as a process / across a cluster
 
 ```elixir
-Node.connect(:"node1@localhost")
-
-# The request below will be served by `node1`
-iex(node2@localhost)4>             Nx.Serving.batched_run(
-...(node2@localhost)4>               {:distributed, SerpentDistributedServing}, 42)
-#Nx.Tensor<
-  f32[1]
-  [9227465.0]
->
+children = [
+  {Nx.Serving, serving: serving, name: MyServing, batch_size: 16, batch_timeout: 50}
+]
 ```
 
-## Installation
-
-If [available in Hex](https://hex.pm/docs/publish), the package can be installed
-by adding `serpent` to your list of dependencies in `mix.exs`:
+Concurrent `Nx.Serving.batched_run(MyServing, input)` calls are batched into a single
+`serving_fn` call. From a connected node that doesn't run the serving itself:
 
 ```elixir
-def deps do
-  [
-    {:serpent, "~> 0.1.0"}
-  ]
-end
+Nx.Serving.batched_run({:distributed, MyServing}, "some input")
 ```
 
+Python is started inside the serving process, so each node sets up its own interpreter
+and loads its own copy of the model. A BEAM node can only run one Python interpreter,
+so the first serving started on a node decides which packages get installed. If you run
+several servings on one node, call `Serpent.Python.init(all_packages)` first.
+
+## Tests
 
 ```
-text_processing_code = """
-def serving_fn(inputs):
-  # Simple text processing function that counts words and returns statistics
-  text = inputs[0]
-  # Count words
-  word_count = len(text.split())
-  # Count characters (excluding spaces)
-  char_count = len(text.replace(" ", ""))
-  # Calculate average word length
-  avg_word_length = char_count / word_count if word_count > 0 else 0
-  return word_count
-"""
+mix test                          # Python + cluster tests
+mix test --include hugging_face   # also downloads torch and a few HF models (~700MB)
 ```
-
-Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc)
-and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
-be found at <https://hexdocs.pm/serpent>.
 
 ## License
 

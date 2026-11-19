@@ -21,3 +21,6 @@ serpent-*.tar
 
 # Temporary files, for example, from tests.
 /tmp/
+
+# Python bytecode
+__pycache__/
