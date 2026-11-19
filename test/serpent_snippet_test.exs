@@ -146,48 +146,13 @@ defmodule SerpentSnippetTest do
     end
   end
 
-  describe "model cards" do
-    @card """
-    # Model
-
-    ```bash
-    pip install -U transformers "sentence-transformers>=3" git+https://github.com/x/y
-    ```
-
-    ```python
+  test "infers dependencies from imports" do
+    snippet = """
+    import os
     from PIL import Image
     from transformers import AutoModel
-    text = "hi"
-    ```
-
-    ```py
-    from transformers import pipeline
-    pipe = pipeline("fill-mask", model="m")
-    ```
     """
 
-    test "reads python blocks and pip packages" do
-      blocks = Serpent.HuggingFace.python_blocks(@card)
-      assert length(blocks) == 2
-
-      assert Serpent.HuggingFace.pip_packages(@card) == [
-               "transformers",
-               "sentence-transformers>=3"
-             ]
-
-      assert Serpent.Snippet.infer_dependencies(hd(blocks)) == ["pillow", "transformers", "torch"]
-    end
-
-    test "picks the block that fits" do
-      blocks = Serpent.HuggingFace.python_blocks(@card)
-      assert Serpent.HuggingFace.pick_block(blocks, []) =~ "pipeline("
-      assert Serpent.HuggingFace.pick_block(blocks, input: "text") =~ "AutoModel"
-      assert Serpent.HuggingFace.pick_block(blocks, input: ~s("hi")) =~ "AutoModel"
-      assert Serpent.HuggingFace.pick_block(blocks, block: 1) =~ "fill-mask"
-
-      assert_raise ArgumentError, ~r/no Python block contains.*block 0/s, fn ->
-        Serpent.HuggingFace.pick_block(blocks, input: "nope")
-      end
-    end
+    assert Serpent.Snippet.infer_dependencies(snippet) == ["pillow", "transformers", "torch"]
   end
 end

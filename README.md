@@ -1,59 +1,57 @@
 # Serpent
 
-Build an `Nx.Serving` from any Hugging Face model, or from any Python code.
+Build an `Nx.Serving` from a Hugging Face model's usage snippet, or from any Python code.
 
 Serpent embeds Python with [Pythonx](https://hex.pm/packages/pythonx) and returns
 a plain `%Nx.Serving{}`, so you get everything Nx.Serving offers: inline runs, request
 batching, supervision, and `{:distributed, name}` lookups across a cluster. Inputs and
 outputs can be any Elixir term, not just tensors.
 
-## Hugging Face models
+## Python snippets (e.g. from a Hugging Face model card)
 
-Give Serpent a model name. It downloads the model card, takes the Python usage snippet
-and turns it into a serving.
+Paste the usage snippet, edited as needed (e.g. drop `device="cuda"`). Snippets that
+create a `transformers` pipeline work as is:
 
 ```elixir
-# The card shows `unmasker = pipeline('fill-mask', ...)`: nothing else needed.
-serving = Serpent.hugging_face("distilbert/distilbert-base-uncased")
+serving =
+  Serpent.from_snippet(~S"""
+  from transformers import pipeline
+  unmasker = pipeline('fill-mask', model='distilbert-base-uncased')
+  unmasker("Hello I'm a [MASK] model.")
+  """)
+
 Nx.Serving.run(serving, "Paris is the [MASK] of France.")
 #=> [%{"token_str" => "capital", "score" => 0.99...}, ...]
 ```
 
-Cards that create a `transformers` pipeline work as is. For anything else, say where the
-example input is, either the variable holding it or the example value as written on
-the card. The result is whatever the snippet's last line shows, unless you pass `:output`.
+For anything else, say where the example input is, either the variable holding it or
+the example value as written in the snippet. The result is whatever the snippet's last
+line shows, unless you pass `:output`.
 
 ```elixir
-# Card: inputs = tokenizer("Hello, my dog is cute", return_tensors="pt") ...
-#       model.config.id2label[predicted_class_id]
 serving =
-  Serpent.hugging_face("distilbert/distilbert-base-uncased-finetuned-sst-2-english",
-    input: ~s("Hello, my dog is cute")
+  Serpent.from_snippet(
+    ~S"""
+    from inworld import voice_isolation
+    offline = voice_isolation.VoiceIsolator("inworld/voice-isolator")
+    wav, sample_rate = voice_isolation.load_audio("sample_14.wav")
+    voice = offline.isolate(wav, sample_rate)
+    """,
+    input: ~s("sample_14.wav"),
+    output: "(voice.tolist(), sample_rate)",
+    dependencies: ["inworld-voice-isolation"]
   )
 
-Nx.Serving.run(serving, ["What a great day", "This is terrible"])
-#=> ["POSITIVE", "NEGATIVE"]
+{voice, sample_rate} = Nx.Serving.run(serving, "noisy.wav")
 
-# Card: sentences = [...]; embeddings = model.encode(sentences)
-Serpent.hugging_face("sentence-transformers/all-MiniLM-L6-v2", input: "sentences", batched: true)
+# sentences = [...]; embeddings = model.encode(sentences)
+Serpent.from_snippet(snippet, input: "sentences", batched: true)
 ```
 
 Statements that use the input run per request. Everything else (imports, loading the
-model) runs once when the serving starts. Pip packages come from the card's
-`pip install` lines plus the snippet's imports. Other options: `:output`, `:block` (which
-code block to use), `:dependencies`, `:batch_size`.
-
-### Pasting a snippet
-
-If the card's snippet needs edits (e.g. it uses `device="cuda"`), paste your version:
-
-```elixir
-Serpent.from_snippet(~S"""
-from transformers import pipeline
-pipe = pipeline("text-classification", model="cardiffnlp/twitter-roberta-base-sentiment-latest")
-pipe("Covid cases are increasing fast!")
-""")
-```
+model) runs once when the serving starts. Pip packages are guessed from the snippet's
+imports; pass `:dependencies` when an import's name differs from its package (as with
+`inworld` above). Other options: `:batch_size`, `:batch_timeout`, `:python`.
 
 `Serpent.Snippet.to_code/2` shows the generated code (Python must be running).
 
@@ -101,7 +99,7 @@ several servings on one node, call `Serpent.Python.init(all_packages)` first.
 
 ```
 mix test                          # Python + cluster tests
-mix test --include hugging_face   # also downloads torch and a few HF models (~700MB)
+mix test --include hugging_face   # also runs model snippets; downloads torch and a few HF models (~700MB)
 ```
 
 ## License

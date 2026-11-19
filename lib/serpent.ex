@@ -1,13 +1,19 @@
 defmodule Serpent do
   @moduledoc """
-  Build `Nx.Serving`s backed by Python code, including any Hugging Face model.
+  Build `Nx.Serving`s backed by Python code, such as a Hugging Face model's
+  usage snippet.
 
   The servings returned here are plain `%Nx.Serving{}` structs, so everything
   Nx.Serving offers works: `Nx.Serving.run/2` inline, `Nx.Serving.start_link/1`
   in a supervision tree, request batching, and `{:distributed, name}` lookups
   across a cluster. Inputs and outputs can be any Elixir term, not just tensors.
 
-      serving = Serpent.hugging_face("distilbert/distilbert-base-uncased-finetuned-sst-2-english")
+      serving =
+        Serpent.from_snippet(~S'''
+        from transformers import pipeline
+        pipe = pipeline("text-classification", model="distilbert/distilbert-base-uncased-finetuned-sst-2-english")
+        pipe("I love this!")
+        ''')
 
       Nx.Serving.run(serving, "I love this!")
       #=> [%{"label" => "POSITIVE", "score" => 0.9998}]
@@ -69,60 +75,8 @@ defmodule Serpent do
   end
 
   @doc """
-  Builds a serving from a Hugging Face model's card.
-
-  Serpent downloads the model card, takes its Python usage snippet and turns
-  it into a serving (see `Serpent.Snippet` for how). Cards that show a
-  `transformers` pipeline need nothing else:
-
-      serving = Serpent.hugging_face("distilbert/distilbert-base-uncased-finetuned-sst-2-english")
-      Nx.Serving.run(serving, "I love this!")
-      #=> [%{"label" => "POSITIVE", "score" => 0.9998...}]
-
-  For other snippets, say where the example input is, either the variable
-  holding it or the example value as written on the card. The result
-  defaults to whatever the snippet's last line shows:
-
-      Serpent.hugging_face("openai-community/gpt2", input: "text")
-
-      Serpent.hugging_face("distilbert/distilbert-base-uncased-finetuned-sst-2-english",
-        input: ~s("Hello, my dog is cute")
-      )
-
-  To edit the snippet first (e.g. to drop `device="cuda"`), copy it from the
-  card and use `from_snippet/2`.
-
-  ## Options
-
-    * `:input`, `:output`, `:batched` - see `Serpent.Snippet`. Without
-      `:input` the snippet must create a `pipeline(...)`
-    * `:block` - which Python block of the card to use (0-based). Defaults
-      to the first one that fits
-    * `:revision` - model card revision. Defaults to `"main"`
-    * `:dependencies` - pip packages. Defaults to the card's `pip install`
-      lines plus packages guessed from the snippet's imports
-    * plus `:python`, `:batch_size` and `:batch_timeout` as in `new/2`
-  """
-  def hugging_face(model, opts \\ []) when is_binary(model) do
-    {card_opts, opts} = Keyword.split(opts, [:block, :revision])
-    card = Serpent.HuggingFace.model_card(model, card_opts)
-
-    snippet =
-      card
-      |> Serpent.HuggingFace.python_blocks()
-      |> Serpent.HuggingFace.pick_block(Keyword.merge(card_opts, Keyword.take(opts, [:input])))
-
-    opts =
-      Keyword.put_new_lazy(opts, :dependencies, fn ->
-        merge_dependencies(Serpent.HuggingFace.pip_packages(card), snippet)
-      end)
-
-    from_snippet(snippet, opts)
-  end
-
-  @doc """
   Builds a serving from a pasted Python usage snippet, e.g. one copied from a
-  model card.
+  Hugging Face model card (edit it first if needed, e.g. to drop `device="cuda"`).
 
       Serpent.from_snippet(~S'''
       from transformers import pipeline
@@ -132,7 +86,8 @@ defmodule Serpent do
 
   See `Serpent.Snippet` for how the snippet is converted and what `:input`,
   `:output` and `:batched` mean. Takes the same options as `new/2` plus
-  those. `:dependencies` defaults to packages guessed from the imports.
+  those. `:dependencies` defaults to packages guessed from the imports; pass
+  it when an import's name differs from its pip package.
   """
   def from_snippet(snippet, opts \\ []) when is_binary(snippet) do
     {snippet_opts, opts} = Keyword.split(opts, [:input, :output, :batched])
@@ -141,14 +96,12 @@ defmodule Serpent do
       raise ArgumentError, "`:output` and `:batched` need `:input`"
     end
 
-    opts = Keyword.put_new_lazy(opts, :dependencies, fn -> merge_dependencies([], snippet) end)
-    build({:snippet, snippet, snippet_opts}, opts)
-  end
+    opts =
+      Keyword.put_new_lazy(opts, :dependencies, fn ->
+        Serpent.Snippet.infer_dependencies(snippet)
+      end)
 
-  # Packages named by the card win over guesses for the same package.
-  defp merge_dependencies(pip_packages, snippet) do
-    (pip_packages ++ Serpent.Snippet.infer_dependencies(snippet))
-    |> Enum.uniq_by(&(&1 |> String.split(~r/[<>=!~\[; ]/, parts: 2) |> hd() |> String.downcase()))
+    build({:snippet, snippet, snippet_opts}, opts)
   end
 
   defp preprocess(input) do

@@ -1,4 +1,4 @@
-# Hugging Face tests download torch and a model, so they only run on request:
+# Hugging Face model tests download torch and models, so they only run on request:
 #
 #     mix test --include hugging_face
 ExUnit.start(exclude: [:hugging_face])
@@ -13,7 +13,7 @@ Serpent.Python.init(
 
 # On networks where DNS returns IPv6 addresses but IPv6 doesn't route, Python
 # tries every IPv6 address (waiting for each to time out) before IPv4, which
-# makes every Hugging Face Hub call take minutes. Opt in to skip IPv6:
+# makes every Hugging Face Hub download take minutes. Opt in to skip IPv6:
 #
 #     SERPENT_TEST_IPV4_ONLY=1 mix test --include hugging_face
 if System.get_env("SERPENT_TEST_IPV4_ONLY") == "1" do
